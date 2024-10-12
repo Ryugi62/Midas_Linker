@@ -343,26 +343,39 @@ class CustomWindow(QMainWindow):
         for idx, click_info in enumerate(self.click_data_list):
             if not self.is_executing:
                 break
-            hwnd = self.find_matching_hwnd(click_info)
+
+            hwnd = None
+            # 최대 60초 동안 1초 간격으로 hwnd를 찾습니다.
+            max_wait_time = 60
+            waited_time = 0
+            while hwnd is None and waited_time < max_wait_time:
+                hwnd = self.find_matching_hwnd(click_info)
+                if hwnd:
+                    break
+                else:
+                    time.sleep(1)
+                    waited_time += 1
+                    print(f"Waiting for hwnd... {waited_time} seconds elapsed.")
+
             if hwnd:
-                time.sleep(1)
-                
                 self.send_click(hwnd, click_info)
-                # 이미지 레이블 업데이트 시그널 발송
                 self.update_image_signal.emit(hwnd)
-                # 리스트 위젯 중앙에 아이템 위치 시그널 발송
                 self.center_item_signal.emit(idx)
             else:
-                print(f"Could not find hwnd for click_info: {click_info}")
-                # 추가: window_class가 일치하는 모든 hwnd의 정보를 출력
+                print(
+                    f"Could not find hwnd for click_info: {click_info} after {max_wait_time} seconds."
+                )
                 matching_hwnds = self.find_hwnds_by_class(click_info["window_class"])
                 print(
                     f"Found {len(matching_hwnds)} hwnds with window_class '{click_info['window_class']}':"
                 )
                 for hwnd_info in matching_hwnds:
                     print(hwnd_info)
-            time.sleep(0.1)  # 액션 사이의 작은 지연
-        # 실행 완료 후 시그널 발송
+                    print(
+                        f"Enabled: {hwnd_info['enabled']}, Visible: {hwnd_info['visible']}"
+                    )
+                time.sleep(0.1)
+
         self.execution_finished_signal.emit()
 
     def find_hwnds_by_class(self, window_class):
@@ -370,14 +383,15 @@ class CustomWindow(QMainWindow):
         hwnds_info = []
         all_hwnds = self.get_all_hwnds()
         for hwnd in all_hwnds:
-            if not win32gui.IsWindowEnabled(hwnd) or not win32gui.IsWindowVisible(hwnd):
-                continue
             current_window_class = win32gui.GetClassName(hwnd)
             if current_window_class == window_class:
                 window_text = win32gui.GetWindowText(hwnd)
                 depth = self.get_window_depth(hwnd)
                 program = self.get_program_name_from_hwnd(hwnd)
                 window_title = win32gui.GetWindowText(hwnd)
+                enabled = win32gui.IsWindowEnabled(hwnd)
+                visible = win32gui.IsWindowVisible(hwnd)
+
                 hwnd_info = {
                     "hwnd": hwnd,
                     "window_class": current_window_class,
@@ -385,6 +399,8 @@ class CustomWindow(QMainWindow):
                     "window_title": window_title,
                     "depth": depth,
                     "program": program,
+                    "enabled": enabled,  # Enabled 상태 추가
+                    "visible": visible,  # Visible 상태 추가
                 }
                 hwnds_info.append(hwnd_info)
         return hwnds_info
