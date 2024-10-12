@@ -1,9 +1,12 @@
 import sys
 import os
 import shutil
+import threading  # For threading
+import time  # For delays
 import win32gui
 import win32process
 import win32con
+import win32api  # For sending messages
 import psutil
 from PyQt5.QtWidgets import (
     QApplication,
@@ -22,7 +25,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
-from pynput import mouse  # 마우스 이벤트 감지를 위한 라이브러리
+from pynput import mouse  # For mouse event detection
 
 class CustomWindow(QMainWindow):
     click_signal = pyqtSignal(dict)
@@ -30,68 +33,68 @@ class CustomWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # 윈도우 설정
+        # Window settings
         self.setWindowTitle("Minimal White & Black UI")
-        self.setGeometry(100, 100, 800, 600)  # 윈도우 크기 조정
+        self.setGeometry(100, 100, 800, 600)
         self.setStyleSheet(
             """
             QMainWindow {
-                background-color: #FFFFFF;  /* 전체 배경을 화이트로 */
+                background-color: #FFFFFF;
                 border-radius: 10px;
             }
             QLabel {
                 border-radius: 5px;
-                background-color: #F5F5F5;  /* 라벨 배경은 아주 연한 그레이 */
+                background-color: #F5F5F5;
                 padding: 15px;
-                border: 1px solid #000000;  /* 검은색 테두리 */
+                border: 1px solid #000000;
                 font-size: 16px;
-                color: #000000;  /* 글자 색은 블랙 */
+                color: #000000;
             }
             QListWidget {
                 border-radius: 5px;
-                border: 1px solid #000000;  /* 검은색 테두리 */
-                background-color: #FFFFFF;  /* 리스트 위젯은 화이트 */
+                border: 1px solid #000000;
+                background-color: #FFFFFF;
                 padding: 10px;
-                color: #000000;  /* 리스트 아이템 글자는 블랙 */
+                color: #000000;
                 font-size: 14px;
             }
             QPushButton {
-                background-color: #FFFFFF;  /* 버튼은 화이트 */
+                background-color: #FFFFFF;
                 border-radius: 5px;
                 padding: 10px;
-                border: 2px solid #000000;  /* 검은 테두리 */
+                border: 2px solid #000000;
                 font-size: 14px;
-                color: #000000;  /* 글자는 블랙 */
+                color: #000000;
             }
             QPushButton:hover {
-                background-color: #F0F0F0;  /* 호버 시 밝은 회색 */
+                background-color: #F0F0F0;
             }
             """
         )
 
-        # 메인 레이아웃
+        # Main layout
         main_layout = QVBoxLayout()
 
-        # 이미지 라벨 설정
+        # Image label
         self.image_label = QLabel(self)
-        self.image_label.setFixedSize(800, 400)  # 기본 사이즈 지정
+        self.image_label.setFixedSize(800, 400)
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setStyleSheet(
-            "background-color: #F5F5F5; color: #000000;"  # 이미지 없을 때 배경 및 글자 색상
+            "background-color: #F5F5F5; color: #000000;"
         )
-        self.image_label.setText("No Image Available")  # 기본 텍스트 추가
+        self.image_label.setText("No Image Available")
         main_layout.addWidget(self.image_label)
 
-        # 리스트 위젯 설정
+        # List widget
         self.list_widget = QListWidget(self)
-        self.list_widget.setFixedSize(800, 100)  # 리스트 크기 지정
+        self.list_widget.setFixedSize(800, 100)
         main_layout.addWidget(self.list_widget)
 
-        # 버튼 레이아웃
+        # Button layouts
         button_layout_top = QHBoxLayout()
         button_layout_bottom = QVBoxLayout()
 
-        # 상단 화살표 버튼
+        # Up and down buttons
         up_button = QPushButton("▲", self)
         down_button = QPushButton("▼", self)
         up_button.clicked.connect(self.move_item_up)
@@ -99,7 +102,7 @@ class CustomWindow(QMainWindow):
         button_layout_top.addWidget(up_button)
         button_layout_top.addWidget(down_button)
 
-        # 복제, 삭제, 설정 버튼
+        # Copy, delete, settings buttons
         copy_button = QPushButton("복제", self)
         delete_button = QPushButton("삭제", self)
         settings_button = QPushButton("설정", self)
@@ -110,24 +113,24 @@ class CustomWindow(QMainWindow):
         button_layout_top.addWidget(delete_button)
         button_layout_top.addWidget(settings_button)
 
-        # 녹화 및 실행 상태 변수
-        self.is_recording = False  # 녹화 상태 여부
-        self.is_executing = False  # 실행 상태 여부
+        # Recording and execution state variables
+        self.is_recording = False
+        self.is_executing = False
 
-        # 녹화 버튼
+        # Record button
         self.record_button = QPushButton("녹화", self)
         self.record_button.clicked.connect(self.toggle_recording)
         button_layout_bottom.addWidget(self.record_button)
 
-        # 저장 버튼
+        # Save button
         save_button = QPushButton("저장", self)
         button_layout_bottom.addWidget(save_button)
 
-        # 불러오기 버튼
+        # Load button
         load_button = QPushButton("불러오기", self)
         button_layout_bottom.addWidget(load_button)
 
-        # 실행 버튼
+        # Execute button
         self.execute_button = QPushButton("실행", self)
         self.execute_button.clicked.connect(self.toggle_execution)
         button_layout_bottom.addWidget(self.execute_button)
@@ -135,36 +138,35 @@ class CustomWindow(QMainWindow):
         main_layout.addLayout(button_layout_top)
         main_layout.addLayout(button_layout_bottom)
 
-        # 메인 위젯 설정
+        # Main widget
         container = QWidget()
         container.setLayout(main_layout)
         self.setCentralWidget(container)
 
-        # 자신의 윈도우 핸들(hWnd) 저장
+        # Excluded hwnds
         self.hwnd = int(self.winId())
-        self.excluded_hwnds = [self.hwnd]  # 제외할 hWnd 목록
+        self.excluded_hwnds = [self.hwnd]
 
-        # 클릭 데이터 저장 리스트
+        # Click data list
         self.click_data_list = []
 
-        # 클릭 신호 연결
+        # Connect click signal
         self.click_signal.connect(self.handle_click_signal)
 
     def toggle_recording(self):
-        """녹화 상태를 토글하고 UI 업데이트"""
+        """Toggle recording state and update UI"""
         if self.is_recording:
-            # 녹화 중지
+            # Stop recording
             self.record_button.setText("녹화")
             self.record_button.setStyleSheet(
                 "background-color: #FFFFFF; color: #000000; border: 2px solid #000000;"
             )
             if hasattr(self, 'mouse_listener'):
-                self.mouse_listener.stop()  # 마우스 리스너 중지
+                self.mouse_listener.stop()
         else:
-            # 녹화 시작
+            # Start recording
             if self.is_executing:
-                self.toggle_execution()  # 실행 중지
-
+                self.toggle_execution()
             self.record_button.setText("중지")
             self.record_button.setStyleSheet(
                 "background-color: #000000; color: #FFFFFF; border: 2px solid #000000;"
@@ -173,35 +175,34 @@ class CustomWindow(QMainWindow):
         self.is_recording = not self.is_recording
 
     def start_listening_for_clicks(self):
-        """마우스 클릭 이벤트 리스너 시작"""
+        """Start mouse click event listener"""
         self.mouse_listener = mouse.Listener(on_click=self.on_click)
         self.mouse_listener.start()
 
     def on_click(self, x, y, button, pressed):
-        """마우스 클릭 이벤트 처리"""
+        """Handle mouse click events"""
         if self.is_recording and pressed:
             hwnd = win32gui.WindowFromPoint((x, y))
-            # 자신의 GUI나 설정 다이얼로그를 클릭한 경우 처리하지 않음
+            # Ignore clicks on own GUI or settings dialog
             if hwnd in self.excluded_hwnds:
                 return
             self.record_click(hwnd, button, x, y)
 
     def record_click(self, hwnd, button, x, y):
-        """클릭 정보 기록 및 리스트에 추가"""
-        # 상대 좌표 계산
+        """Record click information and add to list"""
+        # Relative coordinates
         left, top, right, bottom = win32gui.GetWindowRect(hwnd)
         relative_x = x - left
         relative_y = y - top
 
-        click_type = "Left Click" if button == mouse.Button.left else "Right Click"
+        click_type = "Click" if button == mouse.Button.left else "Right Click"  # Standardize click type
         window_class = win32gui.GetClassName(hwnd)
         window_text = win32gui.GetWindowText(hwnd)
         program = self.get_program_name_from_hwnd(hwnd)
-        window_name = win32gui.GetWindowText(win32gui.GetAncestor(hwnd, win32con.GA_ROOT))
+        window_title = win32gui.GetWindowText(win32gui.GetAncestor(hwnd, win32con.GA_ROOT))
         depth = self.get_window_depth(hwnd)
-        window_title = window_text  # window_title 추가
+        window_title = window_text  # Added window_title
 
-        # 클릭 정보 딕셔너리 생성
         click_info = {
             "x": relative_x,
             "y": relative_y,
@@ -209,31 +210,30 @@ class CustomWindow(QMainWindow):
             "window_class": window_class,
             "window_text": window_text,
             "window_title": window_title,
-            "창이름": window_name,
+            "창이름": window_title,
             "depth": depth,
             "program": program,
         }
 
-        # 클릭 신호 발행 (GUI 업데이트는 메인 스레드에서)
+        # Emit click signal (GUI updates in main thread)
         self.click_signal.emit(click_info)
 
     def handle_click_signal(self, click_info):
-        """메인 스레드에서 클릭 정보를 처리"""
+        """Process click information in main thread"""
         self.click_data_list.append(click_info)
         summary = self.create_summary(click_info)
         self.list_widget.addItem(summary)
 
     def create_summary(self, click_info):
-        """클릭 정보를 기반으로 리스트 항목 요약 생성"""
+        """Create summary for list item"""
         summary = f"({click_info['x']}, {click_info['y']}) {click_info['window_title']} {click_info['program']}"
-        # 길이가 길 경우 '...'으로 표시
         max_length = 80
         if len(summary) > max_length:
             summary = summary[:max_length - 3] + '...'
         return summary
 
     def get_program_name_from_hwnd(self, hwnd):
-        """hwnd를 통해 프로그램 이름 가져오기"""
+        """Get program name from hwnd"""
         _, pid = win32process.GetWindowThreadProcessId(hwnd)
         try:
             process = psutil.Process(pid)
@@ -242,7 +242,7 @@ class CustomWindow(QMainWindow):
             return "Unknown"
 
     def get_window_depth(self, hwnd):
-        """창의 깊이 계산"""
+        """Calculate window depth"""
         depth = 0
         while hwnd:
             hwnd = win32gui.GetParent(hwnd)
@@ -250,79 +250,147 @@ class CustomWindow(QMainWindow):
         return depth
 
     def move_item_up(self):
-        """선택된 항목을 위로 이동"""
+        """Move selected item up"""
         current_row = self.list_widget.currentRow()
         if current_row > 0:
-            # 클릭 데이터 리스트에서도 위치 변경
             self.click_data_list.insert(current_row - 1, self.click_data_list.pop(current_row))
             item = self.list_widget.takeItem(current_row)
             self.list_widget.insertItem(current_row - 1, item)
             self.list_widget.setCurrentRow(current_row - 1)
 
     def move_item_down(self):
-        """선택된 항목을 아래로 이동"""
+        """Move selected item down"""
         current_row = self.list_widget.currentRow()
         if current_row < self.list_widget.count() - 1:
-            # 클릭 데이터 리스트에서도 위치 변경
             self.click_data_list.insert(current_row + 1, self.click_data_list.pop(current_row))
             item = self.list_widget.takeItem(current_row)
             self.list_widget.insertItem(current_row + 1, item)
             self.list_widget.setCurrentRow(current_row + 1)
 
     def duplicate_item(self):
-        """선택된 항목 복제"""
+        """Duplicate selected item"""
         current_row = self.list_widget.currentRow()
         if current_row != -1:
-            # 클릭 데이터 리스트에서도 복제
             self.click_data_list.insert(current_row + 1, self.click_data_list[current_row].copy())
             item_text = self.list_widget.item(current_row).text()
             self.list_widget.insertItem(current_row + 1, item_text)
 
     def delete_item(self):
-        """선택된 항목 삭제"""
+        """Delete selected item"""
         current_row = self.list_widget.currentRow()
         if current_row != -1:
-            # 클릭 데이터 리스트에서도 삭제
             del self.click_data_list[current_row]
             self.list_widget.takeItem(current_row)
 
     def open_settings(self):
-        """설정 다이얼로그 열기"""
+        """Open settings dialog"""
         current_row = self.list_widget.currentRow()
         if current_row != -1:
-            # 클릭 데이터 가져오기
             click_info = self.click_data_list[current_row]
             dialog = SettingsDialog(click_info)
-            dialog_hwnd = int(dialog.winId())  # 다이얼로그의 hWnd 가져오기
-            self.excluded_hwnds.append(dialog_hwnd)  # 제외할 hWnd 목록에 추가
+            dialog_hwnd = int(dialog.winId())
+            self.excluded_hwnds.append(dialog_hwnd)
             if dialog.exec_() == QDialog.Accepted:
-                # 다이얼로그에서 변경된 click_info가 이미 업데이트 되었음
-                # 리스트 항목 업데이트
                 summary = self.create_summary(click_info)
                 self.list_widget.item(current_row).setText(summary)
-            # 다이얼로그 종료 후 hWnd 목록에서 제거
             self.excluded_hwnds.remove(dialog_hwnd)
 
     def toggle_execution(self):
-        """실행 상태를 토글하고 UI 업데이트"""
+        """Toggle execution state and update UI"""
         if self.is_executing:
-            # 실행 중지
+            # Stop execution
             self.execute_button.setText("실행")
             self.execute_button.setStyleSheet(
                 "background-color: #FFFFFF; color: #000000; border: 2px solid #000000;"
             )
-            # 실행 중지 로직 추가 가능
+            self.is_executing = False
         else:
-            # 실행 시작
+            # Start execution
             if self.is_recording:
-                self.toggle_recording()  # 녹화 중지
-
+                self.toggle_recording()
             self.execute_button.setText("중지")
             self.execute_button.setStyleSheet(
                 "background-color: #000000; color: #FFFFFF; border: 2px solid #000000;"
             )
-            # 실행 로직 추가 가능
-        self.is_executing = not self.is_executing
+            self.is_executing = True
+            # Start execution thread
+            self.execution_thread = threading.Thread(target=self.execute_clicks)
+            self.execution_thread.start()
+
+    def execute_clicks(self):
+        """Execute recorded clicks"""
+        for click_info in self.click_data_list:
+            if not self.is_executing:
+                break
+            hwnd = self.find_matching_hwnd(click_info)
+            if hwnd:
+                self.send_click(hwnd, click_info)
+            else:
+                print(f"Could not find hwnd for click_info: {click_info}")
+            time.sleep(0.1)  # Small delay between actions
+
+    def find_matching_hwnd(self, click_info):
+        """Find hwnd matching the recorded information"""
+        all_hwnds = self.get_all_hwnds()
+        for hwnd in all_hwnds:
+            if not win32gui.IsWindowEnabled(hwnd) or not win32gui.IsWindowVisible(hwnd):
+                continue
+            window_class = win32gui.GetClassName(hwnd)
+            window_text = win32gui.GetWindowText(hwnd)
+            window_title = win32gui.GetWindowText(win32gui.GetAncestor(hwnd, win32con.GA_ROOT))
+            depth = self.get_window_depth(hwnd)
+            program = self.get_program_name_from_hwnd(hwnd)
+            if (window_class == click_info['window_class'] and
+                window_text == click_info['window_text'] and
+                window_title == click_info['window_title'] and
+                depth == click_info['depth'] and
+                program == click_info['program']):
+                return hwnd
+        return None
+
+    def send_click(self, hwnd, click_info):
+        """Send click message to hwnd at specified coordinates"""
+        x = click_info['x']
+        y = click_info['y']
+        click_type = click_info['click_type']
+        lParam = win32api.MAKELONG(x, y)
+        if click_type == 'Click':
+            # Send WM_LBUTTONDOWN and WM_LBUTTONUP
+            win32api.PostMessage(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lParam)
+            win32api.PostMessage(hwnd, win32con.WM_LBUTTONUP, None, lParam)
+        elif click_type == 'Right Click':
+            # Send WM_RBUTTONDOWN and WM_RBUTTONUP
+            win32api.PostMessage(hwnd, win32con.WM_RBUTTONDOWN, win32con.MK_RBUTTON, lParam)
+            win32api.PostMessage(hwnd, win32con.WM_RBUTTONUP, None, lParam)
+        elif click_type == 'Double Click':
+            # Send WM_LBUTTONDBLCLK and WM_LBUTTONUP
+            win32api.PostMessage(hwnd, win32con.WM_LBUTTONDBLCLK, win32con.MK_LBUTTON, lParam)
+            win32api.PostMessage(hwnd, win32con.WM_LBUTTONUP, None, lParam)
+
+    def get_all_hwnds(self):
+        """Get all hwnds in the current session"""
+        hwnds = []
+        win32gui.EnumWindows(self.enum_windows_callback, hwnds)
+        all_hwnds = []
+        for hwnd in hwnds:
+            all_hwnds.append(hwnd)
+            all_hwnds.extend(self.get_all_descendants(hwnd))
+        return all_hwnds
+
+    def enum_windows_callback(self, hwnd, hwnds):
+        hwnds.append(hwnd)
+
+    def get_all_descendants(self, hwnd):
+        """Recursively get all child hwnds"""
+        hwnd_list = []
+        child_hwnds = []
+        def callback(child_hwnd, _):
+            child_hwnds.append(child_hwnd)
+        win32gui.EnumChildWindows(hwnd, callback, None)
+        for child_hwnd in child_hwnds:
+            hwnd_list.append(child_hwnd)
+            hwnd_list.extend(self.get_all_descendants(child_hwnd))
+        return hwnd_list
 
 class SettingsDialog(QDialog):
     def __init__(self, click_info, parent=None):
