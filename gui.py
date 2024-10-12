@@ -33,7 +33,7 @@ from pynput import mouse  # 마우스 이벤트 감지를 위해
 
 class CustomWindow(QMainWindow):
     # 시그널 정의
-    click_signal = pyqtSignal(dict)
+    click_signal = pyqtSignal(dict, int)  # 클릭 정보와 hwnd를 함께 전달
     execution_finished_signal = pyqtSignal()
     update_image_signal = pyqtSignal(int)
     center_item_signal = pyqtSignal(int)
@@ -210,9 +210,9 @@ class CustomWindow(QMainWindow):
         window_text = win32gui.GetWindowText(hwnd)
         program = self.get_program_name_from_hwnd(hwnd)
         depth = self.get_window_depth(hwnd)
-        window_title = window_text  # window_title을 window_text로 설정
+        window_title = win32gui.GetWindowText(hwnd)  # 윈도우 창 이름
 
-        # 클릭 정보 딕셔너리 생성
+        # 클릭 정보 딕셔너리 생성 (hwnd는 저장하지 않음)
         click_info = {
             "x": relative_x,
             "y": relative_y,
@@ -220,22 +220,19 @@ class CustomWindow(QMainWindow):
             "window_class": window_class,
             "window_text": window_text,
             "window_title": window_title,
-            "창이름": window_title,
             "depth": depth,
             "program": program,
-            "hwnd": hwnd,  # hwnd 추가
         }
 
         # 클릭 시그널 발송 (메인 스레드에서 GUI 업데이트)
-        self.click_signal.emit(click_info)
+        self.click_signal.emit(click_info, hwnd)
 
-    def handle_click_signal(self, click_info):
+    def handle_click_signal(self, click_info, hwnd):
         """메인 스레드에서 클릭 정보를 처리합니다."""
         self.click_data_list.append(click_info)
         summary = self.create_summary(click_info)
         self.list_widget.addItem(summary)
         # 이미지 레이블 업데이트
-        hwnd = click_info["hwnd"]
         self.update_image_label(hwnd)
 
     def create_summary(self, click_info):
@@ -349,7 +346,7 @@ class CustomWindow(QMainWindow):
             hwnd = self.find_matching_hwnd(click_info)
             if hwnd:
                 time.sleep(1)
-
+                
                 self.send_click(hwnd, click_info)
                 # 이미지 레이블 업데이트 시그널 발송
                 self.update_image_signal.emit(hwnd)
@@ -357,9 +354,40 @@ class CustomWindow(QMainWindow):
                 self.center_item_signal.emit(idx)
             else:
                 print(f"Could not find hwnd for click_info: {click_info}")
+                # 추가: window_class가 일치하는 모든 hwnd의 정보를 출력
+                matching_hwnds = self.find_hwnds_by_class(click_info["window_class"])
+                print(
+                    f"Found {len(matching_hwnds)} hwnds with window_class '{click_info['window_class']}':"
+                )
+                for hwnd_info in matching_hwnds:
+                    print(hwnd_info)
             time.sleep(0.1)  # 액션 사이의 작은 지연
         # 실행 완료 후 시그널 발송
         self.execution_finished_signal.emit()
+
+    def find_hwnds_by_class(self, window_class):
+        """주어진 window_class와 일치하는 모든 hwnd의 정보를 반환합니다."""
+        hwnds_info = []
+        all_hwnds = self.get_all_hwnds()
+        for hwnd in all_hwnds:
+            if not win32gui.IsWindowEnabled(hwnd) or not win32gui.IsWindowVisible(hwnd):
+                continue
+            current_window_class = win32gui.GetClassName(hwnd)
+            if current_window_class == window_class:
+                window_text = win32gui.GetWindowText(hwnd)
+                depth = self.get_window_depth(hwnd)
+                program = self.get_program_name_from_hwnd(hwnd)
+                window_title = win32gui.GetWindowText(hwnd)
+                hwnd_info = {
+                    "hwnd": hwnd,
+                    "window_class": current_window_class,
+                    "window_text": window_text,
+                    "window_title": window_title,
+                    "depth": depth,
+                    "program": program,
+                }
+                hwnds_info.append(hwnd_info)
+        return hwnds_info
 
     def find_matching_hwnd(self, click_info):
         """기록된 정보와 일치하는 hwnd를 찾습니다."""
@@ -371,11 +399,12 @@ class CustomWindow(QMainWindow):
             window_text = win32gui.GetWindowText(hwnd)
             depth = self.get_window_depth(hwnd)
             program = self.get_program_name_from_hwnd(hwnd)
-            window_title = window_text  # window_title을 window_text로 설정
+            window_title = win32gui.GetWindowText(hwnd)  # 윈도우 창 이름
 
             if (
                 window_class == click_info["window_class"]
                 and window_text == click_info["window_text"]
+                and window_title == click_info["window_title"]
                 and depth == click_info["depth"]
                 and program == click_info["program"]
             ):
@@ -525,8 +554,8 @@ class SettingsDialog(QDialog):
         self.window_text = QLineEdit(self)
         self.window_text.setText(click_info.get("window_text", ""))
 
-        self.window_name = QLineEdit(self)
-        self.window_name.setText(click_info.get("창이름", ""))
+        self.window_title = QLineEdit(self)
+        self.window_title.setText(click_info.get("window_title", ""))
 
         self.depth = QLineEdit(self)
         self.depth.setText(str(click_info.get("depth", 0)))
@@ -565,7 +594,7 @@ class SettingsDialog(QDialog):
         form_layout.addRow("Click Type:", self.click_type)
         form_layout.addRow("Window Class:", self.window_class)
         form_layout.addRow("Window Text:", self.window_text)
-        form_layout.addRow("창이름:", self.window_name)
+        form_layout.addRow("Window Title:", self.window_title)
         form_layout.addRow("Depth:", self.depth)
         form_layout.addRow("Program:", self.program)
         form_layout.addRow("Skip:", self.is_skip)
@@ -684,7 +713,7 @@ class SettingsDialog(QDialog):
         self.click_info["click_type"] = self.click_type.currentText()
         self.click_info["window_class"] = self.window_class.text()
         self.click_info["window_text"] = self.window_text.text()
-        self.click_info["창이름"] = self.window_name.text()
+        self.click_info["window_title"] = self.window_title.text()
         self.click_info["depth"] = (
             int(self.depth.text()) if self.depth.text().isdigit() else 0
         )
