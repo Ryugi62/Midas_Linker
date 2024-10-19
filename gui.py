@@ -8,6 +8,7 @@ import win32process
 import win32con
 import win32api  # 메시지 전송을 위해
 import psutil
+import json  # JSON 저장 및 불러오기를 위해
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -24,6 +25,7 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QFileDialog,
     QAbstractItemView,
+    QMessageBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QPixmap, QImage
@@ -130,10 +132,12 @@ class CustomWindow(QMainWindow):
 
         # 저장 버튼
         save_button = QPushButton("저장", self)
+        save_button.clicked.connect(self.save_click_data)  # 저장 버튼 연결
         button_layout_bottom.addWidget(save_button)
 
         # 불러오기 버튼
         load_button = QPushButton("불러오기", self)
+        load_button.clicked.connect(self.load_click_data)  # 불러오기 버튼 연결
         button_layout_bottom.addWidget(load_button)
 
         # 실행 버튼
@@ -173,6 +177,18 @@ class CustomWindow(QMainWindow):
             if hasattr(self, "mouse_listener"):
                 self.mouse_listener.stop()
         else:
+            # 녹화 시작 전에 기존 데이터가 있는지 확인
+            if self.click_data_list:
+                reply = self.show_custom_dialog(
+                    "기록 삭제 확인", "기존 기록을 삭제할까요?", "예", "아니오"
+                )
+                if reply == "예":
+                    # 기존 데이터 삭제
+                    self.click_data_list.clear()
+                    self.list_widget.clear()
+                else:
+                    # 녹화 시작하지 않음
+                    return
             # 녹화 시작
             if self.is_executing:
                 self.toggle_execution()
@@ -182,6 +198,131 @@ class CustomWindow(QMainWindow):
             )
             self.start_listening_for_clicks()
         self.is_recording = not self.is_recording
+
+    def show_custom_dialog(self, title, message, accept_text, reject_text):
+        """커스텀 다이얼로그를 생성하여 사용자에게 메시지를 보여줍니다."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setFixedSize(300, 150)
+        dialog.setStyleSheet(
+            """
+            QDialog {
+                background-color: #FFFFFF;
+                border: 2px solid #000000;
+            }
+            QLabel {
+                font-size: 14px;
+                color: #000000;
+            }
+            QPushButton {
+                background-color: #FFFFFF;
+                border: 1px solid #000000;
+                padding: 5px;
+                font-size: 14px;
+                color: #000000;
+            }
+            QPushButton:hover {
+                background-color: #F0F0F0;
+            }
+            """
+        )
+
+        layout = QVBoxLayout()
+        label = QLabel(message)
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+
+        button_layout = QHBoxLayout()
+        accept_button = QPushButton(accept_text)
+        reject_button = QPushButton(reject_text)
+        accept_button.clicked.connect(lambda: dialog.done(1))
+        reject_button.clicked.connect(lambda: dialog.done(0))
+        button_layout.addWidget(accept_button)
+        button_layout.addWidget(reject_button)
+        layout.addLayout(button_layout)
+
+        dialog.setLayout(layout)
+        result = dialog.exec_()
+        return accept_text if result == 1 else reject_text
+
+    def show_custom_message(self, title, message):
+        """커스텀 메시지 다이얼로그를 보여줍니다."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setFixedSize(300, 150)
+        dialog.setStyleSheet(
+            """
+            QDialog {
+                background-color: #FFFFFF;
+                border: 2px solid #000000;
+            }
+            QLabel {
+                font-size: 14px;
+                color: #000000;
+            }
+            QPushButton {
+                background-color: #FFFFFF;
+                border: 1px solid #000000;
+                padding: 5px;
+                font-size: 14px;
+                color: #000000;
+            }
+            QPushButton:hover {
+                background-color: #F0F0F0;
+            }
+            """
+        )
+
+        layout = QVBoxLayout()
+        label = QLabel(message)
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+
+        ok_button = QPushButton("확인")
+        ok_button.clicked.connect(dialog.accept)
+        layout.addWidget(ok_button)
+
+        dialog.setLayout(layout)
+        dialog.exec_()
+
+    def save_click_data(self):
+        """기록된 클릭 데이터를 JSON 파일로 저장합니다."""
+        if not self.click_data_list:
+            self.show_custom_message("저장", "저장할 데이터가 없습니다.")
+            return
+
+        options = QFileDialog.Options()
+        file_name, _ = QFileDialog.getSaveFileName(
+            self, "파일 저장", "", "JSON Files (*.json);;All Files (*)", options=options
+        )
+        if file_name:
+            try:
+                with open(file_name, 'w', encoding='utf-8') as f:
+                    json.dump(self.click_data_list, f, ensure_ascii=False, indent=4)
+                self.show_custom_message("저장 완료", "데이터가 저장되었습니다.")
+            except Exception as e:
+                self.show_custom_message("저장 실패", f"데이터 저장 중 오류가 발생했습니다:\n{e}")
+
+    def load_click_data(self):
+        """JSON 파일에서 클릭 데이터를 불러와 기존 데이터를 대체합니다."""
+        options = QFileDialog.Options()
+        file_name, _ = QFileDialog.getOpenFileName(
+            self, "파일 열기", "", "JSON Files (*.json);;All Files (*)", options=options
+        )
+        if file_name:
+            try:
+                with open(file_name, 'r', encoding='utf-8') as f:
+                    loaded_data = json.load(f)
+                # 기존 데이터 대체
+                self.click_data_list = loaded_data
+                # 리스트 위젯 업데이트
+                self.list_widget.clear()
+                for click_info in self.click_data_list:
+                    summary = self.create_summary(click_info)
+                    self.list_widget.addItem(summary)
+                self.show_custom_message("불러오기 완료", "데이터가 불러와졌습니다.")
+            except Exception as e:
+                self.show_custom_message("불러오기 실패", f"데이터 불러오기 중 오류가 발생했습니다:\n{e}")
 
     def start_listening_for_clicks(self):
         """마우스 클릭 이벤트 리스너를 시작합니다."""
