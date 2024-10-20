@@ -27,10 +27,13 @@ from PyQt5.QtWidgets import (
     QAbstractItemView,
     QMessageBox,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QPixmap, QImage
 
 from pynput import mouse  # 마우스 이벤트 감지를 위해
+
+import cv2  # OpenCV를 사용한 이미지 매칭을 위해 추가
+import numpy as np  # 이미지 매칭을 위해 추가
 
 
 class CustomWindow(QMainWindow):
@@ -363,6 +366,14 @@ class CustomWindow(QMainWindow):
             "window_title": window_title,
             "depth": depth,
             "program": program,
+            # 추가된 필드 초기화
+            "is_skip": False,
+            "skip_image_path": "",
+            "skip_image_target": {},
+            "is_wait": False,
+            "wait_image_path": "",
+            "wait_image_target": {},
+            "keyboard": "",
         }
 
         # 클릭 시그널 발송 (메인 스레드에서 GUI 업데이트)
@@ -445,7 +456,7 @@ class CustomWindow(QMainWindow):
         current_row = self.list_widget.currentRow()
         if current_row != -1:
             click_info = self.click_data_list[current_row]
-            dialog = SettingsDialog(click_info)
+            dialog = SettingsDialog(click_info, parent=self)
             dialog_hwnd = int(dialog.winId())
             self.excluded_hwnds.append(dialog_hwnd)
             if dialog.exec_() == QDialog.Accepted:
@@ -499,6 +510,17 @@ class CustomWindow(QMainWindow):
                     print(f"Waiting for hwnd... {waited_time} seconds elapsed.")
 
             if hwnd:
+                # is_skip 처리
+                if click_info.get("is_skip"):
+                    should_skip = self.check_skip_condition(click_info)
+                    if should_skip:
+                        print(f"Skipping action at index {idx} due to skip condition.")
+                        continue
+
+                # is_wait 처리
+                if click_info.get("is_wait"):
+                    self.handle_wait_condition(click_info)
+
                 self.send_click(hwnd, click_info)
                 self.update_image_signal.emit(hwnd)
                 self.center_item_signal.emit(idx)
@@ -518,6 +540,61 @@ class CustomWindow(QMainWindow):
                 time.sleep(0.1)
 
         self.execution_finished_signal.emit()
+
+    def check_skip_condition(self, click_info):
+        """Skip 조건을 확인합니다."""
+        target_info = click_info.get("skip_image_target")
+        image_path = click_info.get("skip_image_path")
+        if not target_info or not image_path:
+            return False
+
+        hwnd = self.find_matching_hwnd(target_info)
+        if hwnd:
+            # 이미지 매칭 수행
+            similarity = self.compare_window_image_with_target(hwnd, image_path)
+            print(f"Skip condition similarity: {similarity}")
+            if similarity >= 0.8:
+                return True
+        return False
+
+    def handle_wait_condition(self, click_info):
+        """Wait 조건을 처리합니다."""
+        target_info = click_info.get("wait_image_target")
+        image_path = click_info.get("wait_image_path")
+        if not target_info or not image_path:
+            return
+
+        max_wait_time = 60
+        waited_time = 0
+        while waited_time < max_wait_time:
+            hwnd = self.find_matching_hwnd(target_info)
+            if hwnd:
+                similarity = self.compare_window_image_with_target(hwnd, image_path)
+                print(f"Wait condition similarity: {similarity}")
+                if similarity >= 0.8:
+                    break
+            time.sleep(1)
+            waited_time += 1
+            print(f"Waiting for condition... {waited_time} seconds elapsed.")
+
+    def compare_window_image_with_target(self, hwnd, image_path):
+        """윈도우의 이미지 내에서 타겟 이미지를 찾아 유사도를 반환합니다."""
+        window_image = self.capture_hwnd_image_pil(hwnd)
+        if window_image is None:
+            return 0
+
+        # 윈도우 이미지를 OpenCV 형식으로 변환
+        window_image_cv = cv2.cvtColor(np.array(window_image), cv2.COLOR_RGB2BGR)
+
+        # 타겟 이미지 로드
+        target_image = cv2.imread(image_path)
+        if target_image is None:
+            return 0
+
+        # 템플릿 매칭 수행
+        result = cv2.matchTemplate(window_image_cv, target_image, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, _ = cv2.minMaxLoc(result)
+        return max_val  # 유사도 반환
 
     def find_hwnds_by_class(self, window_class):
         """주어진 window_class와 일치하는 모든 hwnd의 정보를 반환합니다."""
@@ -682,6 +759,46 @@ class CustomWindow(QMainWindow):
         pixmap = pixmap.scaled(self.image_label.size(), Qt.KeepAspectRatio)
         return pixmap
 
+    def capture_hwnd_image_pil(self, hwnd):
+        """hwnd의 이미지를 PIL 이미지로 반환합니다."""
+        import win32ui
+        from PIL import Image
+
+        # 윈도우 사각형 얻기
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        width = right - left
+        height = bottom - top
+        # 디바이스 컨텍스트 생성
+        hwndDC = win32gui.GetWindowDC(hwnd)
+        mfcDC = win32ui.CreateDCFromHandle(hwndDC)
+        saveDC = mfcDC.CreateCompatibleDC()
+        saveBitMap = win32ui.CreateBitmap()
+        saveBitMap.CreateCompatibleBitmap(mfcDC, width, height)
+        saveDC.SelectObject(saveBitMap)
+        # BitBlt
+        result = saveDC.BitBlt((0, 0), (width, height), mfcDC, (0, 0), win32con.SRCCOPY)
+        if result == 0:
+            # BitBlt 실패
+            return None
+        # 비트맵 정보를 메모리에 저장
+        bmpinfo = saveBitMap.GetInfo()
+        bmpstr = saveBitMap.GetBitmapBits(True)
+        im = Image.frombuffer(
+            "RGB",
+            (bmpinfo["bmWidth"], bmpinfo["bmHeight"]),
+            bmpstr,
+            "raw",
+            "BGRX",
+            0,
+            1,
+        )
+        # 클린업
+        win32gui.DeleteObject(saveBitMap.GetHandle())
+        saveDC.DeleteDC()
+        mfcDC.DeleteDC()
+        win32gui.ReleaseDC(hwnd, hwndDC)
+        return im
+
     def center_list_widget_on_item(self, idx):
         """리스트 위젯을 idx에 해당하는 아이템에 중앙 정렬합니다."""
         item = self.list_widget.item(idx)
@@ -690,12 +807,24 @@ class CustomWindow(QMainWindow):
 
 
 class SettingsDialog(QDialog):
+    # 시그널 정의
+    skip_target_selected_signal = pyqtSignal()
+    wait_target_selected_signal = pyqtSignal()
+
     def __init__(self, click_info, parent=None):
         super().__init__(parent)
         self.setWindowTitle("설정")
         self.setGeometry(300, 300, 400, 300)
 
         self.click_info = click_info  # 클릭 정보 저장
+
+        # 타겟 정보 초기화
+        self.skip_target_info = click_info.get('skip_image_target', {})
+        self.wait_target_info = click_info.get('wait_image_target', {})
+
+        # 시그널 연결
+        self.skip_target_selected_signal.connect(self.on_skip_target_selected)
+        self.wait_target_selected_signal.connect(self.on_wait_target_selected)
 
         # 폼 레이아웃 설정
         form_layout = QFormLayout()
@@ -722,7 +851,7 @@ class SettingsDialog(QDialog):
 
         self.is_skip = QCheckBox(self)
         self.is_skip.setChecked(click_info.get("is_skip", False))
-        self.is_skip.stateChanged.connect(self.update_skip_image_button)
+        self.is_skip.stateChanged.connect(self.update_skip_widgets)
 
         self.skip_image = QPushButton("이미지 선택", self)
         self.skip_image.clicked.connect(self.select_skip_image)
@@ -730,11 +859,15 @@ class SettingsDialog(QDialog):
         if self.skip_image_path:
             display_text = self.truncate_path(self.skip_image_path)
             self.skip_image.setText(display_text)
-        self.update_skip_image_button(self.is_skip.checkState())
+
+        self.skip_target_button = QPushButton("Skip Target 설정", self)
+        self.skip_target_button.clicked.connect(self.select_skip_target)
+        if self.skip_target_info:
+            self.skip_target_button.setText('Target Selected')
 
         self.is_wait = QCheckBox(self)
         self.is_wait.setChecked(click_info.get("is_wait", False))
-        self.is_wait.stateChanged.connect(self.update_wait_image_button)
+        self.is_wait.stateChanged.connect(self.update_wait_widgets)
 
         self.wait_image = QPushButton("이미지 선택", self)
         self.wait_image.clicked.connect(self.select_wait_image)
@@ -742,7 +875,11 @@ class SettingsDialog(QDialog):
         if self.wait_image_path:
             display_text = self.truncate_path(self.wait_image_path)
             self.wait_image.setText(display_text)
-        self.update_wait_image_button(self.is_wait.checkState())
+
+        self.wait_target_button = QPushButton("Wait Target 설정", self)
+        self.wait_target_button.clicked.connect(self.select_wait_target)
+        if self.wait_target_info:
+            self.wait_target_button.setText('Target Selected')
 
         self.keyboard = QLineEdit(self)
         self.keyboard.setText(click_info.get("keyboard", ""))
@@ -756,8 +893,10 @@ class SettingsDialog(QDialog):
         form_layout.addRow("Program:", self.program)
         form_layout.addRow("Skip:", self.is_skip)
         form_layout.addRow("Skip Image:", self.skip_image)
+        form_layout.addRow("Skip Target:", self.skip_target_button)
         form_layout.addRow("Wait:", self.is_wait)
         form_layout.addRow("Wait Image:", self.wait_image)
+        form_layout.addRow("Wait Target:", self.wait_target_button)
         form_layout.addRow("Keyboard:", self.keyboard)
 
         # 저장 및 취소 버튼 (한 줄에 위치)
@@ -801,13 +940,21 @@ class SettingsDialog(QDialog):
             """
         )
 
-    def update_skip_image_button(self, state):
-        """is_skip 체크박스의 상태에 따라 skip_image 버튼 활성화/비활성화"""
-        self.skip_image.setEnabled(state == Qt.Checked)
+        # 초기 상태 설정
+        self.update_skip_widgets(self.is_skip.checkState())
+        self.update_wait_widgets(self.is_wait.checkState())
 
-    def update_wait_image_button(self, state):
-        """is_wait 체크박스의 상태에 따라 wait_image 버튼 활성화/비활성화"""
-        self.wait_image.setEnabled(state == Qt.Checked)
+    def update_skip_widgets(self, state):
+        """is_skip 체크박스의 상태에 따라 관련 위젯 활성화/비활성화"""
+        is_enabled = state == Qt.Checked
+        self.skip_image.setEnabled(is_enabled)
+        self.skip_target_button.setEnabled(is_enabled)
+
+    def update_wait_widgets(self, state):
+        """is_wait 체크박스의 상태에 따라 관련 위젯 활성화/비활성화"""
+        is_enabled = state == Qt.Checked
+        self.wait_image.setEnabled(is_enabled)
+        self.wait_target_button.setEnabled(is_enabled)
 
     def select_skip_image(self):
         """Skip 이미지 선택 및 처리"""
@@ -857,6 +1004,80 @@ class SettingsDialog(QDialog):
             display_text = self.truncate_path(self.wait_image_path)
             self.wait_image.setText(display_text)
 
+    def select_skip_target(self):
+        """Skip Target 선택"""
+        self.hide()
+        self.is_selecting_target = True
+        self.mouse_listener = mouse.Listener(on_click=self.on_skip_target_click)
+        self.mouse_listener.start()
+
+    def on_skip_target_click(self, x, y, button, pressed):
+        if pressed and self.is_selecting_target:
+            self.is_selecting_target = False
+            self.mouse_listener.stop()
+            hwnd = win32gui.WindowFromPoint((x, y))
+            # 자신의 윈도우는 제외
+            if hwnd == int(self.winId()) or hwnd == int(self.parent().winId()):
+                QTimer.singleShot(0, self.show)
+                return
+            # 윈도우 정보 가져오기
+            window_class = win32gui.GetClassName(hwnd)
+            window_text = win32gui.GetWindowText(hwnd)
+            depth = self.parent().get_window_depth(hwnd)
+            program = self.parent().get_program_name_from_hwnd(hwnd)
+            window_title = win32gui.GetWindowText(hwnd)
+            # 타겟 정보 저장
+            self.skip_target_info = {
+                'window_class': window_class,
+                'window_text': window_text,
+                'window_title': window_title,
+                'depth': depth,
+                'program': program,
+            }
+            # 시그널 발송하여 GUI 업데이트
+            self.skip_target_selected_signal.emit()
+
+    def on_skip_target_selected(self):
+        self.skip_target_button.setText('Target Selected')
+        self.show()
+
+    def select_wait_target(self):
+        """Wait Target 선택"""
+        self.hide()
+        self.is_selecting_target = True
+        self.mouse_listener = mouse.Listener(on_click=self.on_wait_target_click)
+        self.mouse_listener.start()
+
+    def on_wait_target_click(self, x, y, button, pressed):
+        if pressed and self.is_selecting_target:
+            self.is_selecting_target = False
+            self.mouse_listener.stop()
+            hwnd = win32gui.WindowFromPoint((x, y))
+            # 자신의 윈도우는 제외
+            if hwnd == int(self.winId()) or hwnd == int(self.parent().winId()):
+                QTimer.singleShot(0, self.show)
+                return
+            # 윈도우 정보 가져오기
+            window_class = win32gui.GetClassName(hwnd)
+            window_text = win32gui.GetWindowText(hwnd)
+            depth = self.parent().get_window_depth(hwnd)
+            program = self.parent().get_program_name_from_hwnd(hwnd)
+            window_title = win32gui.GetWindowText(hwnd)
+            # 타겟 정보 저장
+            self.wait_target_info = {
+                'window_class': window_class,
+                'window_text': window_text,
+                'window_title': window_title,
+                'depth': depth,
+                'program': program,
+            }
+            # 시그널 발송하여 GUI 업데이트
+            self.wait_target_selected_signal.emit()
+
+    def on_wait_target_selected(self):
+        self.wait_target_button.setText('Target Selected')
+        self.show()
+
     def truncate_path(self, path, max_length=20):
         """경로가 길 경우 일부만 표시하고 '...'으로 단축"""
         if len(path) > max_length:
@@ -877,8 +1098,10 @@ class SettingsDialog(QDialog):
         self.click_info["program"] = self.program.text()
         self.click_info["is_skip"] = self.is_skip.isChecked()
         self.click_info["skip_image_path"] = getattr(self, "skip_image_path", "")
+        self.click_info["skip_image_target"] = self.skip_target_info
         self.click_info["is_wait"] = self.is_wait.isChecked()
         self.click_info["wait_image_path"] = getattr(self, "wait_image_path", "")
+        self.click_info["wait_image_target"] = self.wait_target_info
         self.click_info["keyboard"] = self.keyboard.text()
 
         super().accept()
