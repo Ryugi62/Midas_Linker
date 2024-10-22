@@ -35,6 +35,10 @@ from pynput import mouse  # 마우스 이벤트 감지를 위해
 import cv2  # OpenCV를 사용한 이미지 매칭을 위해 추가
 import numpy as np  # 이미지 매칭을 위해 추가
 
+import os
+import uuid
+import datetime
+
 
 class CustomWindow(QMainWindow):
     # 시그널 정의
@@ -300,11 +304,13 @@ class CustomWindow(QMainWindow):
         )
         if file_name:
             try:
-                with open(file_name, 'w', encoding='utf-8') as f:
+                with open(file_name, "w", encoding="utf-8") as f:
                     json.dump(self.click_data_list, f, ensure_ascii=False, indent=4)
                 self.show_custom_message("저장 완료", "데이터가 저장되었습니다.")
             except Exception as e:
-                self.show_custom_message("저장 실패", f"데이터 저장 중 오류가 발생했습니다:\n{e}")
+                self.show_custom_message(
+                    "저장 실패", f"데이터 저장 중 오류가 발생했습니다:\n{e}"
+                )
 
     def load_click_data(self):
         """JSON 파일에서 클릭 데이터를 불러와 기존 데이터를 대체합니다."""
@@ -314,7 +320,7 @@ class CustomWindow(QMainWindow):
         )
         if file_name:
             try:
-                with open(file_name, 'r', encoding='utf-8') as f:
+                with open(file_name, "r", encoding="utf-8") as f:
                     loaded_data = json.load(f)
                 # 기존 데이터 대체
                 self.click_data_list = loaded_data
@@ -325,7 +331,9 @@ class CustomWindow(QMainWindow):
                     self.list_widget.addItem(summary)
                 self.show_custom_message("불러오기 완료", "데이터가 불러와졌습니다.")
             except Exception as e:
-                self.show_custom_message("불러오기 실패", f"데이터 불러오기 중 오류가 발생했습니다:\n{e}")
+                self.show_custom_message(
+                    "불러오기 실패", f"데이터 불러오기 중 오류가 발생했습니다:\n{e}"
+                )
 
     def start_listening_for_clicks(self):
         """마우스 클릭 이벤트 리스너를 시작합니다."""
@@ -553,7 +561,7 @@ class CustomWindow(QMainWindow):
             # 이미지 매칭 수행
             similarity = self.compare_window_image_with_target(hwnd, image_path)
             print(f"Skip condition similarity: {similarity}")
-            if similarity >= 0.8:
+            if similarity >= 0.99:
                 return True
         return False
 
@@ -564,14 +572,14 @@ class CustomWindow(QMainWindow):
         if not target_info or not image_path:
             return
 
-        max_wait_time = 60
+        max_wait_time = 300
         waited_time = 0
         while waited_time < max_wait_time:
             hwnd = self.find_matching_hwnd(target_info)
             if hwnd:
                 similarity = self.compare_window_image_with_target(hwnd, image_path)
                 print(f"Wait condition similarity: {similarity}")
-                if similarity >= 0.8:
+                if similarity >= 0.99:
                     break
             time.sleep(1)
             waited_time += 1
@@ -579,22 +587,80 @@ class CustomWindow(QMainWindow):
 
     def compare_window_image_with_target(self, hwnd, image_path):
         """윈도우의 이미지 내에서 타겟 이미지를 찾아 유사도를 반환합니다."""
-        window_image = self.capture_hwnd_image_pil(hwnd)
-        if window_image is None:
+        try:
+            # 테스트 폴더 생성
+            test_dir = "./test"
+            if not os.path.exists(test_dir):
+                os.makedirs(test_dir)
+
+            # Convert path to absolute and normalize
+            if not os.path.isabs(image_path):
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                image_path = os.path.join(script_dir, image_path)
+
+            image_path = os.path.normpath(image_path)
+
+            if not os.path.exists(image_path):
+                print(f"Image file not found: {image_path}")
+                return 0
+
+            # Capture window image
+            window_image = self.capture_hwnd_image_pil(hwnd)
+            if window_image is None:
+                print("Failed to capture window image")
+                return 0
+
+            # 현재 시간과 UUID를 조합하여 고유한 파일명 생성
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_id = str(uuid.uuid4())[:8]
+            base_filename = f"{timestamp}_{unique_id}"
+
+            # 윈도우 캡처 이미지 저장
+            window_capture_path = os.path.join(test_dir, f"{base_filename}_window.png")
+            window_image.save(window_capture_path)
+
+            # Convert PIL image to numpy array
+            window_array = np.array(window_image)
+            window_gray = cv2.cvtColor(window_array, cv2.COLOR_RGB2GRAY)
+
+            # Load target image with explicit encoding handling
+            target_gray = cv2.imdecode(
+                np.fromfile(image_path, dtype=np.uint8), cv2.IMREAD_GRAYSCALE
+            )
+
+            if target_gray is None:
+                print(f"Failed to load target image: {image_path}")
+                return 0
+
+            print(f"Window image shape: {window_gray.shape}")
+            print(f"Target image shape: {target_gray.shape}")
+
+            # Perform template matching
+            result = cv2.matchTemplate(window_gray, target_gray, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+            # 매칭 결과 이미지 생성 및 저장
+            result_image = window_array.copy()
+            h, w = target_gray.shape
+            x, y = max_loc
+            cv2.rectangle(result_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+            result_path = os.path.join(test_dir, f"{base_filename}_result.png")
+            cv2.imwrite(result_path, cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR))
+
+            print(f"Saved window capture: {window_capture_path}")
+            print(f"Saved matching result: {result_path}")
+            print(f"Match location: {max_loc}")
+            print(f"Similarity: {max_val:.4f}")
+
+            return max_val
+
+        except Exception as e:
+            print(f"Image comparison error: {str(e)}")
+            import traceback
+
+            traceback.print_exc()
             return 0
-
-        # 윈도우 이미지를 OpenCV 형식으로 변환
-        window_image_cv = cv2.cvtColor(np.array(window_image), cv2.COLOR_RGB2BGR)
-
-        # 타겟 이미지 로드
-        target_image = cv2.imread(image_path)
-        if target_image is None:
-            return 0
-
-        # 템플릿 매칭 수행
-        result = cv2.matchTemplate(window_image_cv, target_image, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, _ = cv2.minMaxLoc(result)
-        return max_val  # 유사도 반환
 
     def find_hwnds_by_class(self, window_class):
         """주어진 window_class와 일치하는 모든 hwnd의 정보를 반환합니다."""
@@ -819,8 +885,8 @@ class SettingsDialog(QDialog):
         self.click_info = click_info  # 클릭 정보 저장
 
         # 타겟 정보 초기화
-        self.skip_target_info = click_info.get('skip_image_target', {})
-        self.wait_target_info = click_info.get('wait_image_target', {})
+        self.skip_target_info = click_info.get("skip_image_target", {})
+        self.wait_target_info = click_info.get("wait_image_target", {})
 
         # 시그널 연결
         self.skip_target_selected_signal.connect(self.on_skip_target_selected)
@@ -863,7 +929,7 @@ class SettingsDialog(QDialog):
         self.skip_target_button = QPushButton("Skip Target 설정", self)
         self.skip_target_button.clicked.connect(self.select_skip_target)
         if self.skip_target_info:
-            self.skip_target_button.setText('Target Selected')
+            self.skip_target_button.setText("Target Selected")
 
         self.is_wait = QCheckBox(self)
         self.is_wait.setChecked(click_info.get("is_wait", False))
@@ -879,7 +945,7 @@ class SettingsDialog(QDialog):
         self.wait_target_button = QPushButton("Wait Target 설정", self)
         self.wait_target_button.clicked.connect(self.select_wait_target)
         if self.wait_target_info:
-            self.wait_target_button.setText('Target Selected')
+            self.wait_target_button.setText("Target Selected")
 
         self.keyboard = QLineEdit(self)
         self.keyboard.setText(click_info.get("keyboard", ""))
@@ -1028,17 +1094,17 @@ class SettingsDialog(QDialog):
             window_title = win32gui.GetWindowText(hwnd)
             # 타겟 정보 저장
             self.skip_target_info = {
-                'window_class': window_class,
-                'window_text': window_text,
-                'window_title': window_title,
-                'depth': depth,
-                'program': program,
+                "window_class": window_class,
+                "window_text": window_text,
+                "window_title": window_title,
+                "depth": depth,
+                "program": program,
             }
             # 시그널 발송하여 GUI 업데이트
             self.skip_target_selected_signal.emit()
 
     def on_skip_target_selected(self):
-        self.skip_target_button.setText('Target Selected')
+        self.skip_target_button.setText("Target Selected")
         self.show()
 
     def select_wait_target(self):
@@ -1065,17 +1131,17 @@ class SettingsDialog(QDialog):
             window_title = win32gui.GetWindowText(hwnd)
             # 타겟 정보 저장
             self.wait_target_info = {
-                'window_class': window_class,
-                'window_text': window_text,
-                'window_title': window_title,
-                'depth': depth,
-                'program': program,
+                "window_class": window_class,
+                "window_text": window_text,
+                "window_title": window_title,
+                "depth": depth,
+                "program": program,
             }
             # 시그널 발송하여 GUI 업데이트
             self.wait_target_selected_signal.emit()
 
     def on_wait_target_selected(self):
-        self.wait_target_button.setText('Target Selected')
+        self.wait_target_button.setText("Target Selected")
         self.show()
 
     def truncate_path(self, path, max_length=20):
