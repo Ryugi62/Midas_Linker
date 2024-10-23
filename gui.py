@@ -573,14 +573,10 @@ class CustomWindow(QMainWindow):
         delta = 20
 
         new_x = (
-            current_x + delta
-            if current_x + 25 < screen_width
-            else current_x - delta
+            current_x + delta if current_x + 25 < screen_width else current_x - delta
         )
         new_y = (
-            current_y + delta
-            if current_y + 25 < screen_height
-            else current_y - delta
+            current_y + delta if current_y + 25 < screen_height else current_y - delta
         )
 
         # 새로운 좌표로 마우스 커서 이동
@@ -605,7 +601,9 @@ class CustomWindow(QMainWindow):
             position, similarity = self.find_image_in_window(hwnd, image_path)
             if similarity >= 0.8:
                 click_info["x"], click_info["y"] = position
-                print(f"Image found at position {position} with similarity {similarity}")
+                print(
+                    f"Image found at position {position} with similarity {similarity}"
+                )
                 return True
             else:
                 # 현재 윈도우 이미지 캡처
@@ -855,25 +853,53 @@ class CustomWindow(QMainWindow):
         x = click_info["x"]
         y = click_info["y"]
         click_type = click_info["click_type"]
-        lParam = win32api.MAKELONG(x, y)
-        if click_type == "Click":
-            # WM_LBUTTONDOWN 및 WM_LBUTTONUP 전송
-            win32api.PostMessage(
-                hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lParam
-            )
-            win32api.PostMessage(hwnd, win32con.WM_LBUTTONUP, None, lParam)
-        elif click_type == "Right Click":
-            # WM_RBUTTONDOWN 및 WM_RBUTTONUP 전송
-            win32api.PostMessage(
-                hwnd, win32con.WM_RBUTTONDOWN, win32con.MK_RBUTTON, lParam
-            )
-            win32api.PostMessage(hwnd, win32con.WM_RBUTTONUP, None, lParam)
-        elif click_type == "Double Click":
-            # WM_LBUTTONDBLCLK 및 WM_LBUTTONUP 전송
-            win32api.PostMessage(
-                hwnd, win32con.WM_LBUTTONDBLCLK, win32con.MK_LBUTTON, lParam
-            )
-            win32api.PostMessage(hwnd, win32con.WM_LBUTTONUP, None, lParam)
+        window_class = click_info["window_class"]
+
+        if window_class == "#32768":
+            # 메뉴 윈도우의 경우, 화면 좌표 사용
+            left, top, _, _ = win32gui.GetWindowRect(hwnd)
+            screen_x = left + x
+            screen_y = top + y
+
+            # lParam에 화면 좌표를 넣습니다.
+            lParam = win32api.MAKELONG(screen_x, screen_y)
+
+            if click_type == "Click":
+                win32api.PostMessage(
+                    hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lParam
+                )
+                win32api.PostMessage(hwnd, win32con.WM_LBUTTONUP, 0, lParam)
+            elif click_type == "Right Click":
+                win32api.PostMessage(
+                    hwnd, win32con.WM_RBUTTONDOWN, win32con.MK_RBUTTON, lParam
+                )
+                win32api.PostMessage(hwnd, win32con.WM_RBUTTONUP, 0, lParam)
+            elif click_type == "Double Click":
+                win32api.PostMessage(
+                    hwnd, win32con.WM_LBUTTONDBLCLK, win32con.MK_LBUTTON, lParam
+                )
+                win32api.PostMessage(hwnd, win32con.WM_LBUTTONUP, 0, lParam)
+        else:
+            # 일반 윈도우의 경우, 클라이언트 좌표 사용
+            lParam = win32api.MAKELONG(x, y)
+            if click_type == "Click":
+                # WM_LBUTTONDOWN 및 WM_LBUTTONUP 전송
+                win32api.PostMessage(
+                    hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lParam
+                )
+                win32api.PostMessage(hwnd, win32con.WM_LBUTTONUP, 0, lParam)
+            elif click_type == "Right Click":
+                # WM_RBUTTONDOWN 및 WM_RBUTTONUP 전송
+                win32api.PostMessage(
+                    hwnd, win32con.WM_RBUTTONDOWN, win32con.MK_RBUTTON, lParam
+                )
+                win32api.PostMessage(hwnd, win32con.WM_RBUTTONUP, 0, lParam)
+            elif click_type == "Double Click":
+                # WM_LBUTTONDBLCLK 및 WM_LBUTTONUP 전송
+                win32api.PostMessage(
+                    hwnd, win32con.WM_LBUTTONDBLCLK, win32con.MK_LBUTTON, lParam
+                )
+                win32api.PostMessage(hwnd, win32con.WM_LBUTTONUP, 0, lParam)
 
     def get_all_hwnds(self):
         """현재 세션의 모든 hwnd를 가져옵니다."""
@@ -1109,8 +1135,12 @@ class SettingsDialog(QDialog):
             display_text = self.truncate_path(self.auto_position_path)
             self.auto_position_image.setText(display_text)
 
-        self.auto_position_target_button = QPushButton("Auto Position Target 설정", self)
-        self.auto_position_target_button.clicked.connect(self.select_auto_position_target)
+        self.auto_position_target_button = QPushButton(
+            "Auto Position Target 설정", self
+        )
+        self.auto_position_target_button.clicked.connect(
+            self.select_auto_position_target
+        )
         if self.auto_position_target_info:
             self.auto_position_target_button.setText("Target Selected")
 
@@ -1347,7 +1377,9 @@ class SettingsDialog(QDialog):
         """Auto Position Target 선택"""
         self.hide()
         self.is_selecting_target = True
-        self.mouse_listener = mouse.Listener(on_click=self.on_auto_position_target_click)
+        self.mouse_listener = mouse.Listener(
+            on_click=self.on_auto_position_target_click
+        )
         self.mouse_listener.start()
 
     def on_auto_position_target_click(self, x, y, button, pressed):
@@ -1407,9 +1439,7 @@ class SettingsDialog(QDialog):
         self.click_info["keyboard"] = self.keyboard.text()
         self.click_info["is_cursor_move"] = self.is_cursor_move.isChecked()
         self.click_info["is_auto_position"] = self.is_auto_position.isChecked()
-        self.click_info["auto_position_path"] = getattr(
-            self, "auto_position_path", ""
-        )
+        self.click_info["auto_position_path"] = getattr(self, "auto_position_path", "")
         self.click_info["auto_position_target"] = self.auto_position_target_info
 
         super().accept()
