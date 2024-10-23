@@ -35,7 +35,6 @@ from pynput import mouse  # 마우스 이벤트 감지를 위해
 import cv2  # OpenCV를 사용한 이미지 매칭을 위해 추가
 import numpy as np  # 이미지 매칭을 위해 추가
 
-import os
 import uuid
 import datetime
 
@@ -383,6 +382,10 @@ class CustomWindow(QMainWindow):
             "wait_image_target": {},
             "keyboard": "",
             "is_cursor_move": False,  # <- 추가된 필드
+            # 새로운 필드 추가
+            "is_auto_position": False,
+            "auto_position_path": "",
+            "auto_position_target": {},
         }
 
         # 클릭 시그널 발송 (메인 스레드에서 GUI 업데이트)
@@ -534,6 +537,13 @@ class CustomWindow(QMainWindow):
                 if click_info.get("is_cursor_move"):
                     self.move_cursor_before_click()
 
+                # is_auto_position 처리
+                if click_info.get("is_auto_position"):
+                    success = self.handle_auto_position(click_info)
+                    if not success:
+                        print(f"Auto-position failed at index {idx}, skipping action.")
+                        continue
+
                 self.send_click(hwnd, click_info)
                 self.update_image_signal.emit(hwnd)
                 self.center_item_signal.emit(idx)
@@ -575,6 +585,108 @@ class CustomWindow(QMainWindow):
 
         # 새로운 좌표로 마우스 커서 이동
         win32api.SetCursorPos((new_x, new_y))
+
+    def handle_auto_position(self, click_info):
+        """Auto-position 기능을 처리합니다."""
+        target_info = click_info.get("auto_position_target")
+        image_path = click_info.get("auto_position_path")
+        if not target_info or not image_path:
+            return False
+
+        hwnd = self.find_matching_hwnd(target_info)
+        if not hwnd:
+            print("Auto-position target window not found.")
+            return False
+
+        max_attempts = 10
+        previous_image = None
+
+        for attempt in range(max_attempts):
+            position, similarity = self.find_image_in_window(hwnd, image_path)
+            if similarity >= 0.8:
+                click_info["x"], click_info["y"] = position
+                print(f"Image found at position {position} with similarity {similarity}")
+                return True
+            else:
+                # 현재 윈도우 이미지 캡처
+                current_image = self.capture_hwnd_image_pil(hwnd)
+                if previous_image is not None:
+                    # 이미지 비교
+                    difference = self.compare_images(previous_image, current_image)
+                    if difference < 0.01:
+                        print("No more content to scroll, moving to next click.")
+                        return False
+                previous_image = current_image
+
+                # 스크롤 다운
+                self.scroll_window(hwnd)
+                time.sleep(0.5)  # 스크롤 적용 대기
+
+        print("Image not found after scrolling, moving to next click.")
+        return False
+
+    def find_image_in_window(self, hwnd, image_path):
+        """윈도우에서 이미지 매칭을 수행하고 위치와 유사도를 반환합니다."""
+        try:
+            # Convert path to absolute and normalize
+            if not os.path.isabs(image_path):
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                image_path = os.path.join(script_dir, image_path)
+
+            image_path = os.path.normpath(image_path)
+
+            if not os.path.exists(image_path):
+                print(f"Image file not found: {image_path}")
+                return (0, 0), 0
+
+            # Capture window image
+            window_image = self.capture_hwnd_image_pil(hwnd)
+            if window_image is None:
+                print("Failed to capture window image")
+                return (0, 0), 0
+
+            # Convert PIL image to numpy array
+            window_array = np.array(window_image)
+            window_gray = cv2.cvtColor(window_array, cv2.COLOR_RGB2GRAY)
+
+            # Load target image
+            target_gray = cv2.imdecode(
+                np.fromfile(image_path, dtype=np.uint8), cv2.IMREAD_GRAYSCALE
+            )
+
+            if target_gray is None:
+                print(f"Failed to load target image: {image_path}")
+                return (0, 0), 0
+
+            # Perform template matching
+            result = cv2.matchTemplate(window_gray, target_gray, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+            h, w = target_gray.shape
+            center_x = max_loc[0] + w // 2
+            center_y = max_loc[1] + h // 2
+
+            return (center_x, center_y), max_val
+
+        except Exception as e:
+            print(f"Error in find_image_in_window: {str(e)}")
+            import traceback
+
+            traceback.print_exc()
+            return (0, 0), 0
+
+    def scroll_window(self, hwnd):
+        """윈도우를 아래로 스크롤합니다."""
+        scroll_amount = -1  # 음수면 아래로 스크롤
+        win32api.PostMessage(hwnd, win32con.WM_MOUSEWHEEL, scroll_amount * 120, 0)
+
+    def compare_images(self, img1, img2):
+        """두 이미지를 비교하고 차이의 백분율을 반환합니다."""
+        arr1 = np.array(img1).astype("float")
+        arr2 = np.array(img2).astype("float")
+        diff = np.abs(arr1 - arr2)
+        mean_diff = np.mean(diff)
+        return mean_diff / 255
 
     def check_skip_condition(self, click_info):
         """Skip 조건을 확인합니다."""
@@ -903,6 +1015,7 @@ class SettingsDialog(QDialog):
     # 시그널 정의
     skip_target_selected_signal = pyqtSignal()
     wait_target_selected_signal = pyqtSignal()
+    auto_position_target_selected_signal = pyqtSignal()
 
     def __init__(self, click_info, parent=None):
         super().__init__(parent)
@@ -914,10 +1027,14 @@ class SettingsDialog(QDialog):
         # 타겟 정보 초기화
         self.skip_target_info = click_info.get("skip_image_target", {})
         self.wait_target_info = click_info.get("wait_image_target", {})
+        self.auto_position_target_info = click_info.get("auto_position_target", {})
 
         # 시그널 연결
         self.skip_target_selected_signal.connect(self.on_skip_target_selected)
         self.wait_target_selected_signal.connect(self.on_wait_target_selected)
+        self.auto_position_target_selected_signal.connect(
+            self.on_auto_position_target_selected
+        )
 
         # 폼 레이아웃 설정
         form_layout = QFormLayout()
@@ -980,6 +1097,23 @@ class SettingsDialog(QDialog):
         self.is_cursor_move = QCheckBox(self)  # <- 추가된 위젯
         self.is_cursor_move.setChecked(click_info.get("is_cursor_move", False))
 
+        # is_auto_position 관련 위젯 추가
+        self.is_auto_position = QCheckBox(self)
+        self.is_auto_position.setChecked(click_info.get("is_auto_position", False))
+        self.is_auto_position.stateChanged.connect(self.update_auto_position_widgets)
+
+        self.auto_position_image = QPushButton("이미지 선택", self)
+        self.auto_position_image.clicked.connect(self.select_auto_position_image)
+        self.auto_position_path = click_info.get("auto_position_path", "")
+        if self.auto_position_path:
+            display_text = self.truncate_path(self.auto_position_path)
+            self.auto_position_image.setText(display_text)
+
+        self.auto_position_target_button = QPushButton("Auto Position Target 설정", self)
+        self.auto_position_target_button.clicked.connect(self.select_auto_position_target)
+        if self.auto_position_target_info:
+            self.auto_position_target_button.setText("Target Selected")
+
         # 폼 레이아웃에 위젯 추가
         form_layout.addRow("Click Type:", self.click_type)
         form_layout.addRow("Window Class:", self.window_class)
@@ -995,6 +1129,9 @@ class SettingsDialog(QDialog):
         form_layout.addRow("Wait Target:", self.wait_target_button)
         form_layout.addRow("Keyboard:", self.keyboard)
         form_layout.addRow("Cursor Move:", self.is_cursor_move)  # <- 추가된 부분
+        form_layout.addRow("Auto Position:", self.is_auto_position)  # <- 추가된 부분
+        form_layout.addRow("Auto Position Image:", self.auto_position_image)
+        form_layout.addRow("Auto Position Target:", self.auto_position_target_button)
 
         # 저장 및 취소 버튼 (한 줄에 위치)
         self.save_button = QPushButton("저장", self)
@@ -1040,6 +1177,7 @@ class SettingsDialog(QDialog):
         # 초기 상태 설정
         self.update_skip_widgets(self.is_skip.checkState())
         self.update_wait_widgets(self.is_wait.checkState())
+        self.update_auto_position_widgets(self.is_auto_position.checkState())
 
     def update_skip_widgets(self, state):
         """is_skip 체크박스의 상태에 따라 관련 위젯 활성화/비활성화"""
@@ -1052,6 +1190,12 @@ class SettingsDialog(QDialog):
         is_enabled = state == Qt.Checked
         self.wait_image.setEnabled(is_enabled)
         self.wait_target_button.setEnabled(is_enabled)
+
+    def update_auto_position_widgets(self, state):
+        """is_auto_position 체크박스의 상태에 따라 관련 위젯 활성화/비활성화"""
+        is_enabled = state == Qt.Checked
+        self.auto_position_image.setEnabled(is_enabled)
+        self.auto_position_target_button.setEnabled(is_enabled)
 
     def select_skip_image(self):
         """Skip 이미지 선택 및 처리"""
@@ -1100,6 +1244,30 @@ class SettingsDialog(QDialog):
             # 버튼에 선택된 경로 일부 표시
             display_text = self.truncate_path(self.wait_image_path)
             self.wait_image.setText(display_text)
+
+    def select_auto_position_image(self):
+        """Auto Position 이미지 선택 및 처리"""
+        file_dialog = QFileDialog(self)
+        file_path, _ = file_dialog.getOpenFileName(
+            self, "파일 선택", "", "Images (*.png *.xpm *.jpg)"
+        )
+        if file_path:
+            # 복사할 폴더 확인 및 생성
+            auto_images_dir = "./.auto_images"
+            if not os.path.exists(auto_images_dir):
+                os.makedirs(auto_images_dir)
+
+            # 이미지 파일 복사
+            file_name = os.path.basename(file_path)
+            dest_path = os.path.join(auto_images_dir, file_name)
+            shutil.copy(file_path, dest_path)
+
+            # 상대 경로 저장
+            self.auto_position_path = os.path.relpath(dest_path)
+
+            # 버튼에 선택된 경로 일부 표시
+            display_text = self.truncate_path(self.auto_position_path)
+            self.auto_position_image.setText(display_text)
 
     def select_skip_target(self):
         """Skip Target 선택"""
@@ -1175,6 +1343,43 @@ class SettingsDialog(QDialog):
         self.wait_target_button.setText("Target Selected")
         self.show()
 
+    def select_auto_position_target(self):
+        """Auto Position Target 선택"""
+        self.hide()
+        self.is_selecting_target = True
+        self.mouse_listener = mouse.Listener(on_click=self.on_auto_position_target_click)
+        self.mouse_listener.start()
+
+    def on_auto_position_target_click(self, x, y, button, pressed):
+        if pressed and self.is_selecting_target:
+            self.is_selecting_target = False
+            self.mouse_listener.stop()
+            hwnd = win32gui.WindowFromPoint((x, y))
+            # 자신의 윈도우는 제외
+            if hwnd == int(self.winId()) or hwnd == int(self.parent().winId()):
+                QTimer.singleShot(0, self.show)
+                return
+            # 윈도우 정보 가져오기
+            window_class = win32gui.GetClassName(hwnd)
+            window_text = win32gui.GetWindowText(hwnd)
+            depth = self.parent().get_window_depth(hwnd)
+            program = self.parent().get_program_name_from_hwnd(hwnd)
+            window_title = win32gui.GetWindowText(hwnd)
+            # 타겟 정보 저장
+            self.auto_position_target_info = {
+                "window_class": window_class,
+                "window_text": window_text,
+                "window_title": window_title,
+                "depth": depth,
+                "program": program,
+            }
+            # 시그널 발송하여 GUI 업데이트
+            self.auto_position_target_selected_signal.emit()
+
+    def on_auto_position_target_selected(self):
+        self.auto_position_target_button.setText("Target Selected")
+        self.show()
+
     def truncate_path(self, path, max_length=20):
         """경로가 길 경우 일부만 표시하고 '...'으로 단축"""
         if len(path) > max_length:
@@ -1200,7 +1405,12 @@ class SettingsDialog(QDialog):
         self.click_info["wait_image_path"] = getattr(self, "wait_image_path", "")
         self.click_info["wait_image_target"] = self.wait_target_info
         self.click_info["keyboard"] = self.keyboard.text()
-        self.click_info["is_cursor_move"] = self.is_cursor_move.isChecked()  # <- 추가된 부분
+        self.click_info["is_cursor_move"] = self.is_cursor_move.isChecked()
+        self.click_info["is_auto_position"] = self.is_auto_position.isChecked()
+        self.click_info["auto_position_path"] = getattr(
+            self, "auto_position_path", ""
+        )
+        self.click_info["auto_position_target"] = self.auto_position_target_info
 
         super().accept()
 
