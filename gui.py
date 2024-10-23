@@ -382,6 +382,7 @@ class CustomWindow(QMainWindow):
             "wait_image_path": "",
             "wait_image_target": {},
             "keyboard": "",
+            "is_cursor_move": False,  # <- 추가된 필드
         }
 
         # 클릭 시그널 발송 (메인 스레드에서 GUI 업데이트)
@@ -529,6 +530,10 @@ class CustomWindow(QMainWindow):
                 if click_info.get("is_wait"):
                     self.handle_wait_condition(click_info)
 
+                # is_cursor_move 처리
+                if click_info.get("is_cursor_move"):
+                    self.move_cursor_before_click()
+
                 self.send_click(hwnd, click_info)
                 self.update_image_signal.emit(hwnd)
                 self.center_item_signal.emit(idx)
@@ -548,6 +553,28 @@ class CustomWindow(QMainWindow):
                 time.sleep(0.1)
 
         self.execution_finished_signal.emit()
+
+    def move_cursor_before_click(self):
+        """클릭하기 전에 마우스 커서 위치를 이동합니다."""
+        current_x, current_y = win32api.GetCursorPos()
+        screen_width = win32api.GetSystemMetrics(win32con.SM_CXSCREEN)
+        screen_height = win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
+
+        delta = 20
+
+        new_x = (
+            current_x + delta
+            if current_x + 25 < screen_width
+            else current_x - delta
+        )
+        new_y = (
+            current_y + delta
+            if current_y + 25 < screen_height
+            else current_y - delta
+        )
+
+        # 새로운 좌표로 마우스 커서 이동
+        win32api.SetCursorPos((new_x, new_y))
 
     def check_skip_condition(self, click_info):
         """Skip 조건을 확인합니다."""
@@ -950,6 +977,9 @@ class SettingsDialog(QDialog):
         self.keyboard = QLineEdit(self)
         self.keyboard.setText(click_info.get("keyboard", ""))
 
+        self.is_cursor_move = QCheckBox(self)  # <- 추가된 위젯
+        self.is_cursor_move.setChecked(click_info.get("is_cursor_move", False))
+
         # 폼 레이아웃에 위젯 추가
         form_layout.addRow("Click Type:", self.click_type)
         form_layout.addRow("Window Class:", self.window_class)
@@ -964,6 +994,7 @@ class SettingsDialog(QDialog):
         form_layout.addRow("Wait Image:", self.wait_image)
         form_layout.addRow("Wait Target:", self.wait_target_button)
         form_layout.addRow("Keyboard:", self.keyboard)
+        form_layout.addRow("Cursor Move:", self.is_cursor_move)  # <- 추가된 부분
 
         # 저장 및 취소 버튼 (한 줄에 위치)
         self.save_button = QPushButton("저장", self)
@@ -1169,6 +1200,7 @@ class SettingsDialog(QDialog):
         self.click_info["wait_image_path"] = getattr(self, "wait_image_path", "")
         self.click_info["wait_image_target"] = self.wait_target_info
         self.click_info["keyboard"] = self.keyboard.text()
+        self.click_info["is_cursor_move"] = self.is_cursor_move.isChecked()  # <- 추가된 부분
 
         super().accept()
 
